@@ -754,23 +754,180 @@ def readMipNerfSceneInfo(path, images, eval, args, n_views=0, llffhold=8, rand_p
                                            read_mask=read_mask, args=args)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
-    if eval:
-        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
-        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
-    else:
-        train_cam_infos = cam_infos
-        test_cam_infos = []
+    # --------------------------------------------------------
+    # Optional exact sparse-view manifests for custom scenes.
+    # --------------------------------------------------------
 
-    if n_views > 0:
-        sparse_pair_file = os.path.join(path, str(n_views) + "_views", "pair.txt")
-        sparse_subset = select_sparse_view_subset(train_cam_infos, sparse_pair_file, expected_count=n_views)
-        if sparse_subset is not None:
-            train_cam_infos = sparse_subset
+    custom_train_file = (
+        os.path.join(
+            path,
+            "splits",
+            f"train_{n_views:02d}.txt"
+        )
+        if n_views > 0
+        else None
+    )
+
+    custom_test_file = os.path.join(
+        path,
+        "splits",
+        "test_fixed.txt"
+    )
+
+    use_custom_split = (
+        n_views > 0
+        and custom_train_file is not None
+        and os.path.exists(custom_train_file)
+        and os.path.exists(custom_test_file)
+    )
+
+    if use_custom_split:
+
+        def _read_manifest_stems(filename):
+            with open(filename, "r") as f:
+                return [
+                    os.path.splitext(
+                        os.path.basename(line.strip())
+                    )[0]
+                    for line in f
+                    if line.strip()
+                ]
+
+        train_names = _read_manifest_stems(
+            custom_train_file
+        )
+
+        test_names = _read_manifest_stems(
+            custom_test_file
+        )
+
+        if len(set(train_names)) != len(train_names):
+            raise RuntimeError(
+                f"Duplicate training image: "
+                f"{custom_train_file}"
+            )
+
+        if len(set(test_names)) != len(test_names):
+            raise RuntimeError(
+                f"Duplicate test image: "
+                f"{custom_test_file}"
+            )
+
+        overlap = set(train_names) & set(test_names)
+
+        if overlap:
+            raise RuntimeError(
+                f"Train/test leakage: {sorted(overlap)}"
+            )
+
+        name_to_cam = {
+            c.image_name: c
+            for c in cam_infos
+        }
+
+        missing_train = [
+            name for name in train_names
+            if name not in name_to_cam
+        ]
+
+        missing_test = [
+            name for name in test_names
+            if name not in name_to_cam
+        ]
+
+        if missing_train:
+            raise RuntimeError(
+                f"Missing training cameras: "
+                f"{missing_train}"
+            )
+
+        if missing_test:
+            raise RuntimeError(
+                f"Missing test cameras: "
+                f"{missing_test}"
+            )
+
+        # Preserve manifest order. This also makes pair.txt
+        # local source indices deterministic.
+        train_cam_infos = [
+            name_to_cam[name]
+            for name in train_names
+        ]
+
+        test_cam_infos = (
+            [name_to_cam[name] for name in test_names]
+            if eval
+            else []
+        )
+
+        assert len(train_cam_infos) == n_views
+
+        if eval:
+            assert len(test_cam_infos) == 3
+
+        print()
+        print("######## CUSTOM MYROOM FIXED SPLIT ########")
+        print(f"n_views: {n_views}")
+        print(
+            "train:",
+            [c.image_name for c in train_cam_infos]
+        )
+        print(
+            "test :",
+            [c.image_name for c in test_cam_infos]
+        )
+        print("############################################")
+
+    else:
+
+        # Original SparseSurf Mip-NeRF360 behaviour.
+        if eval:
+            train_cam_infos = [
+                c for idx, c in enumerate(cam_infos)
+                if idx % llffhold != 0
+            ]
+
+            test_cam_infos = [
+                c for idx, c in enumerate(cam_infos)
+                if idx % llffhold == 0
+            ]
+
         else:
-            idx_sub = np.linspace(0, len(train_cam_infos)-1, n_views)
-            idx_sub = [round(i) for i in idx_sub]
-            train_cam_infos = [c for idx, c in enumerate(train_cam_infos) if idx in idx_sub]
-            assert len(train_cam_infos) == n_views
+            train_cam_infos = cam_infos
+            test_cam_infos = []
+
+        if n_views > 0:
+
+            sparse_pair_file = os.path.join(
+                path,
+                str(n_views) + "_views",
+                "pair.txt"
+            )
+
+            sparse_subset = select_sparse_view_subset(
+                train_cam_infos,
+                sparse_pair_file,
+                expected_count=n_views
+            )
+
+            if sparse_subset is not None:
+                train_cam_infos = sparse_subset
+
+            else:
+                idx_sub = np.linspace(
+                    0,
+                    len(train_cam_infos) - 1,
+                    n_views
+                )
+
+                idx_sub = [round(i) for i in idx_sub]
+
+                train_cam_infos = [
+                    c for idx, c in enumerate(train_cam_infos)
+                    if idx in idx_sub
+                ]
+
+                assert len(train_cam_infos) == n_views
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
     scene_info = SceneInfo(point_cloud=pcd,
