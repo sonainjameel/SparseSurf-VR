@@ -637,6 +637,18 @@ def visualize(scene, opt, iteration, gaussians, pipe, background, allCameras, vi
 
     def image_grid(xs, n_col=5):
         """ n x [3, h, w]"""
+        target_h, target_w = xs[0].shape[-2:]
+        xs = [
+            x if x.shape[-2:] == (target_h, target_w)
+            else torch.nn.functional.interpolate(
+                x.unsqueeze(0),
+                size=(target_h, target_w),
+                mode="bilinear",
+                align_corners=False
+            ).squeeze(0)
+            for x in xs
+        ]
+
         if len(xs) % n_col > 0:
             emptys = (n_col - len(xs) % n_col) * [torch.ones_like(xs[0]), ]
             xs = xs + emptys
