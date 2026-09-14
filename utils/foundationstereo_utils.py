@@ -120,7 +120,7 @@ class Foundation:
             self.model = self.model.module
         else:
             self.model = FoundationStereo(args)
-        self.model.load_state_dict(torch.load(resolved_ckpt, map_location="cpu")["model"])
+        self.model.load_state_dict(torch.load(resolved_ckpt, map_location="cpu", weights_only=False)["model"])
         self.model.to(DEVICE)
         self.model.eval()
 

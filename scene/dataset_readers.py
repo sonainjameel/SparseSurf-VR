@@ -334,6 +334,12 @@ def readSparseColmapCameras(path, cam_extrinsics, cam_intrinsics, images_folder,
                 continue
             pair = list(pair_entry['pair'][:2])
             break
+        # A camera may have no explicit overlap pair.
+        # Keep it eligible for feature extraction; SparseSurf
+        # will obtain source views using its existing pose fallback.
+        if pair is None:
+            pair = []
+
         if pair == None:
             feat = None
             cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
