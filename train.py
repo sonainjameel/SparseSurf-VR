@@ -278,15 +278,32 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             raft_depth = viewpoint_cam.get_last_stereo_depth()
             prior_valid_mask = viewpoint_cam.get_last_stereo_depth_mask()
  
-            stereo_depth_loss = torch.abs((surf_depth - raft_depth))[prior_valid_mask.bool()].mean()
+            stereo_depth_residual = surf_depth - raft_depth
+            stereo_depth_robust = torch.sqrt(stereo_depth_residual ** 2 + 1e-6)
+
+            raft_dx = torch.abs(raft_depth[:, :, 1:] - raft_depth[:, :, :-1])
+            raft_dy = torch.abs(raft_depth[:, 1:, :] - raft_depth[:, :-1, :])
+            raft_dx = F.pad(raft_dx, (0, 1, 0, 0))
+            raft_dy = F.pad(raft_dy, (0, 0, 0, 1))
+
+            stereo_confidence = torch.exp(-(raft_dx + raft_dy))
+            valid_stereo = prior_valid_mask.bool()
+
+            stereo_depth_loss = (
+                stereo_confidence[valid_stereo] *
+                stereo_depth_robust[valid_stereo]
+            ).sum() / stereo_confidence[valid_stereo].sum().clamp_min(1e-8)
             loss += opt.lambda_stereo_depth_sup * stereo_depth_loss
             stereo_depth_normal = render_normal_func(viewpoint_cam, raft_depth.squeeze())
             stereo_depth_normal = stereo_depth_normal.cuda().detach()
             stereo_depth_normal = rend_alpha.clone().detach() * stereo_depth_normal
             normal_prior_error = (1 - F.cosine_similarity(stereo_depth_normal, rend_normal, dim=0)) + \
                                     (1 - F.cosine_similarity(stereo_depth_normal, surf_normal, dim=0))
-            normal_prior_error = ranking_loss(normal_prior_error[prior_valid_mask.squeeze(0).bool()], 
-                                                penalize_ratio = 1.0, type='mean')
+            normal_valid = prior_valid_mask.squeeze(0).bool()
+            normal_confidence = stereo_confidence.squeeze(0)
+            normal_prior_error = ranking_loss(
+                (normal_prior_error * normal_confidence)[normal_valid],
+                penalize_ratio=1.0, type='mean')
             normal_prior_loss = opt.lambda_normal_prior * normal_prior_error
             loss += normal_prior_loss  
             # smooth loss
@@ -459,7 +476,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 mask = (render_pkg["out_observe"] > 0) & visibility_filter
                 gaussians.max_radii2D[mask] = torch.max(gaussians.max_radii2D[mask], radii[mask])
                 viewspace_point_tensor_abs = render_pkg["viewspace_points_abs"]
-                gaussians.add_densification_stats(viewspace_point_tensor, viewspace_point_tensor_abs, visibility_filter)
+                gaussians.add_densification_stats(viewspace_point_tensor, viewspace_point_tensor_abs, mask)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
