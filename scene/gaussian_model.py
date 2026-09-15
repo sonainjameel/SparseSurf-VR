@@ -218,7 +218,7 @@ class GaussianModel:
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._knn_f], 'lr': 0.01, "name": "knn_f"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._features_rest], 'lr': training_args.feature_lr / training_args.sh_rest_lr_divisor, "name": "f_rest"},
             {'params': [self._surf_feat], 'lr': training_args.feature_lr, "name": "surf_feat"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},

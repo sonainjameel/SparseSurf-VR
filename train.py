@@ -14,7 +14,7 @@ import os
 import torch
 import random
 from random import randint
-from utils.loss_utils import l1_loss, ssim, loss_depth_smoothness
+from utils.loss_utils import l1_loss, ssim, loss_depth_smoothness, charbonnier_loss, local_zncc_loss
 from utils.feat_utils import compute_reference_view_feature_penalty, FeatExt
 from gaussian_renderer import render, network_gui
 import sys
@@ -221,7 +221,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 torch.cuda.empty_cache()
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
+        if iteration % opt.sh_interval == 0:
             gaussians.oneupSHdegree()
 
         
@@ -238,7 +238,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        # Appearance-photometry V1:
+        # robust pixel fidelity + structural similarity +
+        # illumination/contrast-tolerant local photometric consistency.
+        Lcharb = charbonnier_loss(image, gt_image)
+        Lzncc = local_zncc_loss(image, gt_image)
+
+        lambda_charb = 1.0 - opt.lambda_dssim - opt.lambda_zncc
+
+        loss = (
+            lambda_charb * Lcharb
+            + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            + opt.lambda_zncc * Lzncc
+        )
        
         # regularization
         lambda_normal = opt.lambda_normal if iteration > opt.lambda_normal_from_iter else 0.0
