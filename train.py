@@ -20,6 +20,7 @@ from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from scene.app_model import AppModel
+from scene.optical_appearance_model import OpticalAppearanceModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -138,6 +139,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     # Enables gaussian_renderer's existing app_image path.
     gaussians.use_app = True
+
+    # Optical appearance is activated only after the geometry/detail
+    # scaffold has stabilized.
+    optical_start_iter = 4500
+    optical_model = None
     temp_trainCam = scene.getTrainCameras().copy()
     name2idx = {}
     for idx, view in enumerate(temp_trainCam):
@@ -255,12 +261,30 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         viewpoint_vircam = unseen_viewpoint_stack.pop(randint(0, len(unseen_viewpoint_stack)-1))
 
+        if (
+            iteration == optical_start_iter
+            and optical_model is None
+        ):
+            print(
+                "\n[ITER {}] Activating optical appearance model "
+                "with {} Gaussians".format(
+                    iteration,
+                    gaussians.get_xyz.shape[0]
+                )
+            )
+
+            optical_model = OpticalAppearanceModel(
+                gaussians.get_xyz.shape[0],
+                device=gaussians.get_xyz.device
+            )
+
         render_pkg = render(
             viewpoint_cam,
             gaussians,
             pipe,
             background,
-            app_model=app_model
+            app_model=app_model,
+            optical_model=optical_model
         )
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], \
             render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -451,10 +475,41 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         current_ab = app_model.appear_ab[viewpoint_cam.uid]
         radiometric_reg = 1e-4 * torch.sum(current_ab * current_ab)
 
-        total_loss = loss + normal_loss + radiometric_reg
+        optical_reg = (
+            optical_model.regularization()
+            if optical_model is not None
+            else 0.0
+        )
+
+        total_loss = (
+            loss
+            + normal_loss
+            + radiometric_reg
+            + optical_reg
+        )
             
 
         total_loss.backward()
+
+        # ----------------------------------------------------
+        # Optical stage gradient ownership
+        # ----------------------------------------------------
+        # RGB appearance may update:
+        #   - base SH features
+        #   - optical reflection parameters
+        #   - optical transmission
+        #   - per-view radiometric compensation
+        #
+        # Geometry is frozen so reflection/transmission cannot
+        # solve RGB residuals by moving or reshaping surfaces.
+        if optical_model is not None:
+            for geometry_parameter in (
+                gaussians._xyz,
+                gaussians._scaling,
+                gaussians._rotation,
+                gaussians._opacity
+            ):
+                geometry_parameter.grad = None
 
         iter_end.record()
        
@@ -491,9 +546,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
+                if optical_model is not None:
+                    optical_model.save(
+                        args.model_path,
+                        iteration
+                    )
+
 
             # Densification
-            if iteration < opt.densify_until_iter:
+            if iteration < min(
+                opt.densify_until_iter,
+                optical_start_iter
+            ):
                 # Keep track of max radii in image-space for pruning
                 mask = (render_pkg["out_observe"] > 0) & visibility_filter
                 gaussians.max_radii2D[mask] = torch.max(gaussians.max_radii2D[mask], radii[mask])
@@ -506,7 +570,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                                                 opt.opacity_cull_threshold, scene.cameras_extent, size_threshold)
 
             # reset_opacity
-            if iteration < opt.densify_until_iter:
+            if iteration < min(
+                opt.densify_until_iter,
+                optical_start_iter
+            ):
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
@@ -516,8 +583,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.step()
                 app_model.optimizer.step()
 
+                if optical_model is not None:
+                    optical_model.optimizer.step()
+
                 gaussians.optimizer.zero_grad(set_to_none=True)
                 app_model.optimizer.zero_grad(set_to_none=True)
+
+                if optical_model is not None:
+                    optical_model.optimizer.zero_grad(
+                        set_to_none=True
+                    )
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

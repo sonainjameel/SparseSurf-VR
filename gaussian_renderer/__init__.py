@@ -33,7 +33,7 @@ def render_normal(viewpoint_cam, depth, offset=None, normal=None, scale=1):
     return normal_ref
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, 
-           app_model: AppModel=None, return_plane = True, return_depth_normal = True):
+           app_model: AppModel=None, optical_model=None, return_plane = True, return_depth_normal = True):
     """
     Render the scene. 
     
@@ -86,6 +86,156 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         colors_precomp = override_color
 
     return_dict = None
+
+    # --------------------------------------------------------
+    # Residual-Decomposed SparseSurf optical appearance
+    # --------------------------------------------------------
+    optical_colors = None
+    visual_opacity = None
+
+    if optical_model is not None:
+        # Geometry is intentionally detached from RGB appearance.
+        xyz_opt = pc.get_xyz.detach()
+
+        to_camera = (
+            viewpoint_camera.camera_center[None, :] - xyz_opt
+        )
+        to_camera = torch.nn.functional.normalize(
+            to_camera,
+            dim=-1
+        )
+
+        normal_opt = pc.get_normal(viewpoint_camera).detach()
+        normal_opt = torch.nn.functional.normalize(
+            normal_opt,
+            dim=-1
+        )
+
+        # Orient normal toward the current camera.
+        facing = (
+            (normal_opt * to_camera).sum(dim=-1, keepdim=True)
+            < 0
+        )
+        normal_opt = torch.where(
+            facing,
+            -normal_opt,
+            normal_opt
+        )
+
+        # Reflection direction:
+        # r = 2(n.v)n - v
+        ndotv = (
+            normal_opt * to_camera
+        ).sum(dim=-1, keepdim=True)
+
+        reflection_dir = (
+            2.0 * ndotv * normal_opt - to_camera
+        )
+
+        reflection_dir = torch.nn.functional.normalize(
+            reflection_dir,
+            dim=-1
+        )
+
+        # Existing SparseSurf SH remains the stable/base appearance.
+        shs_view = (
+            pc.get_features
+            .transpose(1, 2)
+            .view(
+                -1,
+                3,
+                (pc.max_sh_degree + 1) ** 2
+            )
+        )
+
+        # Standard 3DGS SH convention: camera -> Gaussian.
+        base_dir = (
+            xyz_opt
+            - viewpoint_camera.camera_center[None, :]
+        )
+        base_dir = torch.nn.functional.normalize(
+            base_dir,
+            dim=-1
+        )
+
+        base_rgb = (
+            eval_sh(
+                pc.active_sh_degree,
+                shs_view,
+                base_dir
+            )
+            + 0.5
+        )
+        base_rgb = torch.clamp(base_rgb, min=0.0)
+
+        # High-frequency spherical-Gaussian reflection lobe.
+        axis = optical_model.specular_axis
+        sharpness = optical_model.specular_sharpness
+        amplitude = optical_model.specular_amplitude
+
+        angular_alignment = (
+            reflection_dir * axis
+        ).sum(dim=-1, keepdim=True)
+
+        specular_lobe = torch.exp(
+            sharpness
+            * (angular_alignment - 1.0)
+        )
+
+        specular_rgb = amplitude * specular_lobe
+
+        # ----------------------------------------------------
+        # Geometry opacity != optical opacity
+        # ----------------------------------------------------
+        transmission = optical_model.transmission
+
+        # Schlick Fresnel approximation.
+        F0 = 0.04
+
+        cos_theta = torch.clamp(
+            torch.abs(ndotv),
+            0.0,
+            1.0
+        )
+
+        fresnel = (
+            F0
+            + (1.0 - F0)
+            * torch.pow(1.0 - cos_theta, 5.0)
+        )
+
+        # Fraction of foreground radiance that blocks the
+        # background.  For opaque surfaces transmission -> 0.
+        optical_extinction = (
+            1.0
+            - transmission * (1.0 - fresnel)
+        )
+
+        # Geometry opacity is detached here:
+        # RGB appearance must not change physical occupancy.
+        visual_opacity = (
+            pc.get_opacity.detach()
+            * optical_extinction
+        )
+
+        # Premultiplied physical decomposition:
+        #
+        # opaque:
+        #   diffuse + Fresnel reflection
+        #
+        # transmissive:
+        #   reflection remains while background passes through
+        optical_numerator = (
+            (1.0 - transmission)
+            * (1.0 - fresnel)
+            * base_rgb
+            + fresnel * specular_rgb
+        )
+
+        optical_colors = (
+            optical_numerator
+            / optical_extinction.clamp(min=1.0e-4)
+        )
     raster_settings = PlaneGaussianRasterizationSettings(
             image_height=int(viewpoint_camera.image_height),
             image_width=int(viewpoint_camera.image_width),
@@ -105,13 +255,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rasterizer = PlaneGaussianRasterizer(raster_settings=raster_settings)
 
     if not return_plane:
+        use_optical = optical_model is not None
+
         rendered_image, radii, out_observe, _, _ = rasterizer(
-            means3D = means3D,
+            means3D = means3D.detach() if use_optical else means3D,
             means2D = means2D,
             means2D_abs = means2D_abs,
-            shs = shs,
-            colors_precomp = colors_precomp,
-            opacities = opacity,
+            shs = None if use_optical else shs,
+            colors_precomp = optical_colors if use_optical else colors_precomp,
+            opacities = visual_opacity if use_optical else opacity,
             scales = scales,
             rotations = rotations,
             cov3D_precomp = cov3D_precomp)
@@ -153,6 +305,27 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         rotations = rotations,
         all_map = input_all_map,
         cov3D_precomp = cov3D_precomp)
+
+    # Optical RGB is rendered separately so depth, normals,
+    # visibility and geometric occupancy remain SparseSurf geometry.
+    if optical_model is not None:
+        optical_image, _, _, _, _ = rasterizer(
+            means3D = means3D.detach(),
+            means2D = means2D,
+            means2D_abs = means2D_abs,
+            shs = None,
+            colors_precomp = optical_colors,
+            opacities = visual_opacity,
+            scales = scales.detach() if scales is not None else None,
+            rotations = rotations.detach() if rotations is not None else None,
+            cov3D_precomp = (
+                cov3D_precomp.detach()
+                if cov3D_precomp is not None
+                else None
+            )
+        )
+
+        rendered_image = optical_image
 
     rendered_normal = out_all_map[0:3]
     rendered_alpha = out_all_map[3:4, ]
