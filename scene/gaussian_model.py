@@ -214,6 +214,7 @@ class GaussianModel:
         self.abs_split_radii2D_threshold = training_args.abs_split_radii2D_threshold
         self.max_abs_split_points = training_args.max_abs_split_points
         self.max_all_points = training_args.max_all_points
+        self.densify_min_observations = training_args.densify_min_observations
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._knn_f], 'lr': 0.01, "name": "knn_f"},
@@ -526,6 +527,20 @@ class GaussianModel:
         grads_abs = self.xyz_gradient_accum_abs / self.denom_abs
         grads[grads.isnan()] = 0.0
         grads_abs[grads_abs.isnan()] = 0.0
+
+        # Robust Geometry V2 observation-support gate.
+        # denom counts valid observations accumulated since the
+        # previous densification event.
+        n_before = self.get_xyz.shape[0]
+        support_mask = (
+            self.denom.squeeze(-1) >= self.densify_min_observations
+        )
+
+        # Unsupported Gaussians remain in the representation, but
+        # are not allowed to generate new Gaussians this interval.
+        grads[~support_mask] = 0.0
+        grads_abs[~support_mask] = 0.0
+        supported = int(support_mask.sum().item())
         max_radii2D = self.max_radii2D.clone()
 
         self.densify_and_clone(grads, max_grad, extent)
@@ -538,6 +553,13 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
+
+        n_after = self.get_xyz.shape[0]
+        print(
+            f"[DENSIFY-V2] support={supported}/{n_before} "
+            f"min_obs={self.densify_min_observations} "
+            f"points={n_before}->{n_after}"
+        )
         # print(f"all points {self._xyz.shape[0]}")
         torch.cuda.empty_cache()
 

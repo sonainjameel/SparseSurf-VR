@@ -128,6 +128,10 @@ class OptimizationParams(ParamGroup):
         self.abs_split_radii2D_threshold = 20
         self.max_abs_split_points = 50_000
         self.max_all_points = 6000_000
+
+        # Robust Geometry V2: require repeated valid observations
+        # before a Gaussian is eligible for clone/split densification.
+        self.densify_min_observations = 3
         self.opacity_cull_threshold = 0.005
         self.densify_abs_grad_threshold = 0.0008
         
