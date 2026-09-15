@@ -2,7 +2,7 @@
 #PBS -N ss_small21_app1
 #PBS -q large_gpuq
 #PBS -l select=1:ncpus=4:ngpus=1:mem=64gb
-#PBS -l walltime=05:00:00
+#PBS -l walltime=03:00:00
 #PBS -j oe
 
 set -eo pipefail
