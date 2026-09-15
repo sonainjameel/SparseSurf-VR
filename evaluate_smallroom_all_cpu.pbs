@@ -1,0 +1,19 @@
+#!/bin/bash
+#PBS -N eval_small21_all_cpu
+#PBS -q medq
+#PBS -l select=1:ncpus=4:mem=32gb
+#PBS -l walltime=00:20:00
+#PBS -j oe
+
+set -eo pipefail
+
+cd "$HOME/projects/SparseSurf-VR"
+source "$HOME/projects/SparseSurf/activate_sparsesurf_bw.sh"
+
+BASE="$HOME/sparsesurf_shared/outputs/smallroom21_sparsesurf_baseline_7000_fullres"
+V1="$HOME/sparsesurf_shared/outputs/smallroom21_sparsesurf_robust_geometry_v1_7000_fullres"
+V2="$HOME/sparsesurf_shared/outputs/smallroom21_sparsesurf_robust_geometry_v2_7000_fullres"
+
+python -u metrics_cpu.py \
+    -s "$HOME/sparsesurf_shared/data/mipnerf360/SmallRoom_eval24" \
+    -m "$BASE" "$V1" "$V2"
