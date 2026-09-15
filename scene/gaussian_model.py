@@ -541,11 +541,59 @@ class GaussianModel:
         # print(f"all points {self._xyz.shape[0]}")
         torch.cuda.empty_cache()
 
-    def add_densification_stats(self, viewspace_point_tensor, viewspace_point_tensor_abs, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
-        self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor_abs.grad[update_filter,:2], dim=-1, keepdim=True)
+    def add_densification_stats(
+        self,
+        viewspace_point_tensor,
+        viewspace_point_tensor_abs,
+        update_filter,
+        reliability=None
+    ):
+        """
+        Accumulate densification evidence with optional photometric
+        reliability routing.
+
+        Reliable observations preserve the original SparseSurf gradient
+        evidence. View-inconsistent observations contribute proportionally
+        less evidence for creating additional Gaussians.
+
+        The denominator still counts the observation normally. Therefore
+        persistently unreliable appearance cannot retain the same average
+        densification score simply by scaling numerator and denominator
+        together.
+        """
+        grad = torch.norm(
+            viewspace_point_tensor.grad[update_filter, :2],
+            dim=-1,
+            keepdim=True
+        )
+
+        grad_abs = torch.norm(
+            viewspace_point_tensor_abs.grad[update_filter, :2],
+            dim=-1,
+            keepdim=True
+        )
+
+        if reliability is None:
+            route_weight = torch.ones_like(grad)
+        else:
+            route_weight = (
+                reliability[update_filter]
+                .detach()
+                .clamp(0.0, 1.0)
+                .view(-1, 1)
+            )
+
+        self.xyz_gradient_accum[update_filter] += (
+            grad * route_weight
+        )
+
+        self.xyz_gradient_accum_abs[update_filter] += (
+            grad_abs * route_weight
+        )
+
+        # Count every visible observation exactly as baseline SparseSurf.
+        # Only its densification evidence is reliability-weighted.
         self.denom[update_filter] += 1
-        self.denom_abs[update_filter] += 1
 
     def get_points_depth_in_depth_map(self, fov_camera, depth, points_in_camera_space, scale=1):
         st = max(int(scale/2)-1,0)

@@ -294,6 +294,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             normal_smooth_loss = loss_depth_smoothness(rend_normal, stereo_depth_normal) + loss_depth_smoothness(surf_normal, stereo_depth_normal)
             loss += normal_smooth_loss * opt.lambda_normal_smooth
 
+        # Per-Gaussian reliability for SH/densification routing.
+        # Defaults to None so baseline behaviour is preserved when
+        # multi-view reliability is unavailable.
+        gaussian_reliability = None
+
         # Pseudo-view Feature Loss
         if iteration > opt.pesudo_featpgsr_iter:
             if viewpoint_vircam is not None:
@@ -404,6 +409,89 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         threshold=opt.ncc_mask_ratio
                     )
 
+                    # --------------------------------------------------
+                    # Pixel reliability -> Gaussian reliability
+                    # --------------------------------------------------
+                    # valid_indices are the flattened image locations of
+                    # the NCC patch centres.  Propagate each unreliable
+                    # observation across its patch footprint, then project
+                    # visible Gaussian centres into that image-space map.
+                    #
+                    # Unobserved/unsampled pixels default to reliability=1,
+                    # so this routing can only suppress/redirect evidence
+                    # that SparseSurf actually measured.
+                    with torch.no_grad():
+                        unreliability_map = torch.zeros(
+                            (1, 1, H, W),
+                            device=photo_reliability.device,
+                            dtype=photo_reliability.dtype
+                        )
+
+                        flat_unreliability = unreliability_map.view(-1)
+                        flat_unreliability[valid_indices] = (
+                            1.0 - photo_reliability
+                        )
+
+                        # The NCC score represents the whole local patch,
+                        # not only its centre pixel.
+                        kernel = 2 * patch_size + 1
+                        if kernel > 1:
+                            unreliability_map = F.max_pool2d(
+                                unreliability_map,
+                                kernel_size=kernel,
+                                stride=1,
+                                padding=patch_size
+                            )
+
+                        reliability_map = 1.0 - unreliability_map
+
+                        xyz = gaussians.get_xyz.detach()
+
+                        pts_cam = (
+                            xyz @ viewpoint_cam.world_view_transform[:3, :3]
+                            + viewpoint_cam.world_view_transform[3, :3]
+                        )
+
+                        z = pts_cam[:, 2]
+
+                        px = (
+                            pts_cam[:, 0] * viewpoint_cam.Fx
+                            / z.clamp(min=1e-6)
+                            + viewpoint_cam.Cx
+                        )
+                        py = (
+                            pts_cam[:, 1] * viewpoint_cam.Fy
+                            / z.clamp(min=1e-6)
+                            + viewpoint_cam.Cy
+                        )
+
+                        ix_g = torch.round(px).long()
+                        iy_g = torch.round(py).long()
+
+                        projected_valid = (
+                            visibility_filter
+                            & (z > 1e-6)
+                            & (ix_g >= 0)
+                            & (ix_g < W)
+                            & (iy_g >= 0)
+                            & (iy_g < H)
+                        )
+
+                        gaussian_reliability = torch.ones(
+                            xyz.shape[0],
+                            device=xyz.device,
+                            dtype=photo_reliability.dtype
+                        )
+
+                        gaussian_reliability[projected_valid] = (
+                            reliability_map[
+                                0,
+                                0,
+                                iy_g[projected_valid],
+                                ix_g[projected_valid]
+                            ]
+                        )
+
                     # Existing geometric correspondence confidence.
                     geo_weights = weights.reshape(-1)
 
@@ -442,6 +530,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
 
         total_loss.backward()
+
+        # ------------------------------------------------------
+        # Reliability-routed higher-order SH optimisation
+        # ------------------------------------------------------
+        # View-inconsistent observations need more capacity from
+        # directional appearance rather than stronger geometry
+        # updates.  Only f_rest is amplified here; xyz, scale,
+        # rotation and opacity gradients are untouched.
+        if (
+            gaussian_reliability is not None
+            and gaussians._features_rest.grad is not None
+        ):
+            sh_gradient_scale = (
+                2.0 - gaussian_reliability
+            ).view(-1, 1, 1)
+
+            gaussians._features_rest.grad.mul_(
+                sh_gradient_scale
+            )
 
         iter_end.record()
        
@@ -485,7 +592,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 mask = (render_pkg["out_observe"] > 0) & visibility_filter
                 gaussians.max_radii2D[mask] = torch.max(gaussians.max_radii2D[mask], radii[mask])
                 viewspace_point_tensor_abs = render_pkg["viewspace_points_abs"]
-                gaussians.add_densification_stats(viewspace_point_tensor, viewspace_point_tensor_abs, visibility_filter)
+                gaussians.add_densification_stats(
+                    viewspace_point_tensor,
+                    viewspace_point_tensor_abs,
+                    visibility_filter,
+                    reliability=gaussian_reliability
+                )
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
