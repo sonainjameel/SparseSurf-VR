@@ -19,6 +19,7 @@ from utils.feat_utils import compute_reference_view_feature_penalty, FeatExt
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
+from scene.app_model import AppModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -115,6 +116,28 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, dataset.feat_dim)
     scene = Scene(dataset, gaussians)
+
+    # --------------------------------------------------------
+    # Residual-Decomposed SparseSurf:
+    # per-view radiometric compensation
+    #
+    # I_corrected = exp(a_v) * I_render + b_v
+    #
+    # Camera UID rather than number of train cameras is used
+    # because the fixed train/test split can retain global UIDs.
+    # --------------------------------------------------------
+    all_radiometric_cameras = (
+        scene.getTrainCameras() + scene.getTestCameras()
+    )
+
+    max_camera_uid = max(
+        cam.uid for cam in all_radiometric_cameras
+    )
+
+    app_model = AppModel(max_camera_uid + 1)
+
+    # Enables gaussian_renderer's existing app_image path.
+    gaussians.use_app = True
     temp_trainCam = scene.getTrainCameras().copy()
     name2idx = {}
     for idx, view in enumerate(temp_trainCam):
@@ -232,9 +255,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         viewpoint_vircam = unseen_viewpoint_stack.pop(randint(0, len(unseen_viewpoint_stack)-1))
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render(
+            viewpoint_cam,
+            gaussians,
+            pipe,
+            background,
+            app_model=app_model
+        )
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], \
             render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+        # RGB supervision uses radiometrically compensated rendering.
+        # Geometry/depth/normal rendering remains unchanged.
+        image = render_pkg["app_image"]
 
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
@@ -412,7 +445,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         
         # loss
-        total_loss = loss + normal_loss
+        # Weak gauge regularization around identity exposure:
+        # a_v = 0 -> gain 1
+        # b_v = 0 -> zero offset
+        current_ab = app_model.appear_ab[viewpoint_cam.uid]
+        radiometric_reg = 1e-4 * torch.sum(current_ab * current_ab)
+
+        total_loss = loss + normal_loss + radiometric_reg
             
 
         total_loss.backward()
@@ -475,7 +514,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none = True)
+                app_model.optimizer.step()
+
+                gaussians.optimizer.zero_grad(set_to_none=True)
+                app_model.optimizer.zero_grad(set_to_none=True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
