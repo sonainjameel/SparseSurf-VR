@@ -143,42 +143,6 @@ def train_view_fa_loss(
     denom = valid_f.sum().clamp(min=1.0)
     loss = (loss_map * valid_f).sum() / denom
     return loss
-def charbonnier_loss(pred, gt, eps=1e-3):
-    """Robust pixel-wise photometric loss."""
-    diff = pred - gt
-    return torch.sqrt(diff * diff + eps * eps).mean()
-
-
-
-def local_zncc_loss(pred, gt, window_size=11, eps=1e-5):
-    """
-    Local zero-normalized cross-correlation loss.
-    Robust to local affine brightness/contrast changes.
-    Inputs: [C,H,W]
-    """
-    x = pred.unsqueeze(0)
-    y = gt.unsqueeze(0)
-
-    pad = window_size // 2
-
-    # Reflect padding avoids artificial dark borders.
-    x_pad = F.pad(x, (pad, pad, pad, pad), mode="reflect")
-    y_pad = F.pad(y, (pad, pad, pad, pad), mode="reflect")
-
-    mu_x  = F.avg_pool2d(x_pad,     window_size, stride=1)
-    mu_y  = F.avg_pool2d(y_pad,     window_size, stride=1)
-    ex2   = F.avg_pool2d(x_pad*x_pad, window_size, stride=1)
-    ey2   = F.avg_pool2d(y_pad*y_pad, window_size, stride=1)
-    exy   = F.avg_pool2d(x_pad*y_pad, window_size, stride=1)
-
-    var_x = torch.clamp(ex2 - mu_x * mu_x, min=0.0)
-    var_y = torch.clamp(ey2 - mu_y * mu_y, min=0.0)
-    cov   = exy - mu_x * mu_y
-
-    zncc = cov / torch.sqrt(var_x * var_y + eps)
-    zncc = torch.clamp(zncc, -1.0, 1.0)
-
-    return 1.0 - zncc.mean()
 
 
 def photometric_reliability(photo_error, beta=4.0, eps=1e-6):
@@ -199,10 +163,10 @@ def photometric_reliability(photo_error, beta=4.0, eps=1e-6):
             1 -> highly multi-view-consistent observation
             0 -> strongly view-dependent / inconsistent observation
 
-    The score is intentionally continuous rather than a hard NCC threshold so
-    the same signal can later route photometric supervision, higher-order SH
-    learning, and Gaussian densification.
+    The same continuous reliability signal will later route photometric
+    supervision, higher-order SH learning, and Gaussian densification.
     """
     error = torch.clamp(photo_error, min=0.0)
     reliability = torch.exp(-beta * error)
     return torch.clamp(reliability, min=eps, max=1.0)
+
