@@ -15,6 +15,7 @@ import torch
 import random
 from random import randint
 from utils.loss_utils import l1_loss, ssim, loss_depth_smoothness
+from utils.loss_utils import photometric_reliability
 from utils.feat_utils import compute_reference_view_feature_penalty, FeatExt
 from gaussian_renderer import render, network_gui
 import sys
@@ -388,14 +389,39 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     ps = int(np.sqrt(tps))
                     nea_pool = torch.mean(sampled_gray_val, dim=2)
                     ref_pool = torch.mean(ref_gray_val, dim=2)
-                    ncc = (1 - F.cosine_similarity(nea_pool, ref_pool, dim=0))
-                    ncc_mask = (ncc < opt.ncc_mask_ratio)
-                    ncc_mask = ncc_mask.reshape(-1)
-                    ncc = ncc.reshape(-1) * weights
-                    ncc = ncc[ncc_mask].squeeze()
-                    if ncc_mask.sum() > 0:
-                        ncc_loss = ncc_weight * ncc.mean()
-                        loss += ncc_loss
+                    # Per-sample multi-view photometric inconsistency.
+                    photo_error = (
+                        1 - F.cosine_similarity(
+                            nea_pool, ref_pool, dim=0
+                        )
+                    ).reshape(-1)
+
+                    # Convert SparseSurf's existing NCC criterion into a
+                    # continuous reliability signal. Detach the routing
+                    # decision so the model cannot game its own weight.
+                    photo_reliability = photometric_reliability(
+                        photo_error.detach(),
+                        threshold=opt.ncc_mask_ratio
+                    )
+
+                    # Existing geometric correspondence confidence.
+                    geo_weights = weights.reshape(-1)
+
+                    # Soft robust photogrammetric supervision:
+                    # reliable cross-view matches contribute strongly;
+                    # view-inconsistent matches fade out continuously
+                    # instead of only being hard rejected.
+                    effective_weights = (
+                        geo_weights * photo_reliability
+                    ).detach()
+
+                    denom = effective_weights.sum().clamp(min=1e-6)
+
+                    ncc_loss = ncc_weight * (
+                        photo_error * effective_weights
+                    ).sum() / denom
+
+                    loss += ncc_loss
 
         # Posudo-View Feature Regularization
         loss = apply_reference_feature_penalty(

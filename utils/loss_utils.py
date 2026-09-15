@@ -145,28 +145,22 @@ def train_view_fa_loss(
     return loss
 
 
-def photometric_reliability(photo_error, beta=4.0, eps=1e-6):
+def photometric_reliability(photo_error, threshold, eps=1e-6):
     """
-    Convert multi-view photometric inconsistency into a soft reliability score.
+    Convert SparseSurf multi-view NCC inconsistency into soft reliability.
 
-    Args:
-        photo_error:
-            Per-sample multi-view inconsistency. In SparseSurf this is the
-            existing NCC/cosine inconsistency:
-                1 - cosine_similarity(nearest_patch, reference_patch)
+    reliability = 1:
+        highly view-consistent observation
 
-        beta:
-            Controls how strongly inconsistent observations are down-weighted.
+    reliability = 0:
+        inconsistency reaches/exceeds SparseSurf's existing NCC rejection
+        threshold.
 
-    Returns:
-        reliability in [0, 1], with:
-            1 -> highly multi-view-consistent observation
-            0 -> strongly view-dependent / inconsistent observation
-
-    The same continuous reliability signal will later route photometric
-    supervision, higher-order SH learning, and Gaussian densification.
+    The reliability is detached at the call site so optimization cannot
+    reduce the loss by manipulating its own routing weight.
     """
     error = torch.clamp(photo_error, min=0.0)
-    reliability = torch.exp(-beta * error)
-    return torch.clamp(reliability, min=eps, max=1.0)
+    threshold = max(float(threshold), eps)
 
+    reliability = 1.0 - (error / threshold)
+    return torch.clamp(reliability, min=0.0, max=1.0)
