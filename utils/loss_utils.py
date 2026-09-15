@@ -179,3 +179,30 @@ def local_zncc_loss(pred, gt, window_size=11, eps=1e-5):
     zncc = torch.clamp(zncc, -1.0, 1.0)
 
     return 1.0 - zncc.mean()
+
+
+def photometric_reliability(photo_error, beta=4.0, eps=1e-6):
+    """
+    Convert multi-view photometric inconsistency into a soft reliability score.
+
+    Args:
+        photo_error:
+            Per-sample multi-view inconsistency. In SparseSurf this is the
+            existing NCC/cosine inconsistency:
+                1 - cosine_similarity(nearest_patch, reference_patch)
+
+        beta:
+            Controls how strongly inconsistent observations are down-weighted.
+
+    Returns:
+        reliability in [0, 1], with:
+            1 -> highly multi-view-consistent observation
+            0 -> strongly view-dependent / inconsistent observation
+
+    The score is intentionally continuous rather than a hard NCC threshold so
+    the same signal can later route photometric supervision, higher-order SH
+    learning, and Gaussian densification.
+    """
+    error = torch.clamp(photo_error, min=0.0)
+    reliability = torch.exp(-beta * error)
+    return torch.clamp(reliability, min=eps, max=1.0)
