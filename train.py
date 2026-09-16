@@ -620,7 +620,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # Save training-view radiometric calibration for
                 # reproducibility. It is NOT automatically applied
                 # to unseen test cameras.
-                app_model.save(
+                app_model.save_weights(
                     args.model_path,
                     iteration
                 )
