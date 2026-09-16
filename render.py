@@ -20,6 +20,7 @@ from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
+from scene.optical_appearance_model import OpticalAppearanceModel
 import cv2
 
 
@@ -36,6 +37,66 @@ def visualize_depth(depth):
 
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, args):
+
+    # ========================================================
+    # OPTICAL MODEL LOAD
+    # ========================================================
+    # Iterations before 4500 are ordinary SparseSurf.
+    # From 4500 onward the saved optical representation is
+    # mandatory. Never silently fall back to baseline rendering.
+    optical_model = None
+
+    if iteration >= 4500:
+        optical_path = os.path.join(
+            model_path,
+            "optical_model",
+            "iteration_{}".format(iteration),
+            "optical.pth"
+        )
+
+        if not os.path.isfile(optical_path):
+            raise FileNotFoundError(
+                "Optical model required for iteration {} "
+                "but was not found: {}".format(
+                    iteration,
+                    optical_path
+                )
+            )
+
+        optical_model = OpticalAppearanceModel.load(
+            optical_path,
+            device=str(gaussians.get_xyz.device)
+        )
+
+        optical_model.eval()
+
+        for parameter in optical_model.parameters():
+            parameter.requires_grad_(False)
+
+        n_geometry = gaussians.get_xyz.shape[0]
+        n_optical = (
+            optical_model
+            .transmission_logit
+            .shape[0]
+        )
+
+        if n_geometry != n_optical:
+            raise RuntimeError(
+                "Geometry/optical Gaussian count mismatch: "
+                "geometry={}, optical={}".format(
+                    n_geometry,
+                    n_optical
+                )
+            )
+
+        print(
+            "[RENDER] Loaded optical appearance: "
+            "{} Gaussians from {}".format(
+                n_optical,
+                optical_path
+            )
+        )
+
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -44,7 +105,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        render_pkg = render(view, gaussians, pipeline, background)
+        render_pkg = render(view, gaussians, pipeline, background, optical_model=optical_model)
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(render_pkg["render"], os.path.join(render_path, view.image_name + '.png'))
         torchvision.utils.save_image(gt, os.path.join(gts_path, view.image_name + ".png"))
