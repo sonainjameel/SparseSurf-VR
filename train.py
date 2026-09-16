@@ -15,6 +15,7 @@ import torch
 import random
 from random import randint
 from utils.loss_utils import l1_loss, ssim, loss_depth_smoothness
+from utils.detail_routing import build_detail_densification_route
 from utils.feat_utils import compute_reference_view_feature_penalty, FeatExt
 from gaussian_renderer import render, network_gui
 import sys
@@ -294,8 +295,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image = render_pkg["app_image"]
 
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        # Coarse-to-fine photometric supervision.
+        # Sparse geometry is established before full-resolution
+        # texture can dominate the RGB objective.
+        if iteration < 2500:
+            photo_image = F.interpolate(
+                image.unsqueeze(0),
+                scale_factor=0.5,
+                mode="bilinear",
+                align_corners=False
+            ).squeeze(0)
+
+            photo_gt = F.interpolate(
+                gt_image.unsqueeze(0),
+                scale_factor=0.5,
+                mode="bilinear",
+                align_corners=False
+            ).squeeze(0)
+        else:
+            photo_image = image
+            photo_gt = gt_image
+
+        Ll1 = l1_loss(photo_image, photo_gt)
+
+        loss = (
+            (1.0 - opt.lambda_dssim) * Ll1
+            + opt.lambda_dssim
+            * (1.0 - ssim(photo_image, photo_gt))
+        )
        
         # regularization
         lambda_normal = opt.lambda_normal if iteration > opt.lambda_normal_from_iter else 0.0
@@ -349,6 +376,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # smooth loss
             normal_smooth_loss = loss_depth_smoothness(rend_normal, stereo_depth_normal) + loss_depth_smoothness(surf_normal, stereo_depth_normal)
             loss += normal_smooth_loss * opt.lambda_normal_smooth
+
+        detail_densify_route = None
 
         # Pseudo-view Feature Loss
         if iteration > opt.pesudo_featpgsr_iter:
@@ -445,14 +474,56 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     ps = int(np.sqrt(tps))
                     nea_pool = torch.mean(sampled_gray_val, dim=2)
                     ref_pool = torch.mean(ref_gray_val, dim=2)
-                    ncc = (1 - F.cosine_similarity(nea_pool, ref_pool, dim=0))
-                    ncc_mask = (ncc < opt.ncc_mask_ratio)
-                    ncc_mask = ncc_mask.reshape(-1)
-                    ncc = ncc.reshape(-1) * weights
-                    ncc = ncc[ncc_mask].squeeze()
-                    if ncc_mask.sum() > 0:
-                        ncc_loss = ncc_weight * ncc.mean()
+                    ncc_raw = (
+                        1.0
+                        - F.cosine_similarity(
+                            nea_pool,
+                            ref_pool,
+                            dim=0
+                        )
+                    ).reshape(-1)
+
+                    # Original SparseSurf NCC supervision.
+                    ncc_mask = (
+                        ncc_raw < opt.ncc_mask_ratio
+                    )
+
+                    ncc_weighted = (
+                        ncc_raw * weights
+                    )
+
+                    ncc_valid = ncc_weighted[ncc_mask]
+
+                    if ncc_valid.numel() > 0:
+                        ncc_loss = (
+                            ncc_weight
+                            * ncc_valid.mean()
+                        )
                         loss += ncc_loss
+
+                    # Late geometry/detail stage:
+                    # only stable spatial detail may increase
+                    # densification pressure.
+                    if (
+                        iteration >= 3000
+                        and iteration < optical_start_iter
+                    ):
+                        detail_densify_route = (
+                            build_detail_densification_route(
+                                gaussians=gaussians,
+                                viewpoint_cam=viewpoint_cam,
+                                gt_image=gt_image,
+                                rendered_image=image,
+                                radii=radii,
+                                visibility_filter=visibility_filter,
+                                valid_indices=valid_indices,
+                                ncc_error=ncc_raw,
+                                ncc_threshold=opt.ncc_mask_ratio,
+                                patch_size=patch_size,
+                                height=H,
+                                width=W,
+                            )
+                        )
 
         # Posudo-View Feature Regularization
         loss = apply_reference_feature_penalty(
@@ -562,7 +633,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 mask = (render_pkg["out_observe"] > 0) & visibility_filter
                 gaussians.max_radii2D[mask] = torch.max(gaussians.max_radii2D[mask], radii[mask])
                 viewspace_point_tensor_abs = render_pkg["viewspace_points_abs"]
-                gaussians.add_densification_stats(viewspace_point_tensor, viewspace_point_tensor_abs, visibility_filter)
+                gaussians.add_densification_stats(
+                    viewspace_point_tensor,
+                    viewspace_point_tensor_abs,
+                    visibility_filter,
+                    detail_route=detail_densify_route
+                )
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None

@@ -541,10 +541,59 @@ class GaussianModel:
         # print(f"all points {self._xyz.shape[0]}")
         torch.cuda.empty_cache()
 
-    def add_densification_stats(self, viewspace_point_tensor, viewspace_point_tensor_abs, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
-        self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor_abs.grad[update_filter,:2], dim=-1, keepdim=True)
-        self.denom[update_filter] += 1
+    def add_densification_stats(
+        self,
+        viewspace_point_tensor,
+        viewspace_point_tensor_abs,
+        update_filter,
+        detail_route=None
+    ):
+        """
+        Accumulate SparseSurf densification evidence.
+
+        detail_route does not modify optimizer geometry gradients.
+        It only changes whether an observation should create more
+        spatial Gaussian capacity.
+        """
+
+        grad = torch.norm(
+            viewspace_point_tensor.grad[
+                update_filter, :2
+            ],
+            dim=-1,
+            keepdim=True
+        )
+
+        grad_abs = torch.norm(
+            viewspace_point_tensor_abs.grad[
+                update_filter, :2
+            ],
+            dim=-1,
+            keepdim=True
+        )
+
+        if detail_route is not None:
+            route = (
+                detail_route[update_filter]
+                .detach()
+                .clamp(0.5, 2.0)
+                .view(-1, 1)
+            )
+
+            grad = grad * route
+            grad_abs = grad_abs * route
+
+        self.xyz_gradient_accum[
+            update_filter
+        ] += grad
+
+        self.xyz_gradient_accum_abs[
+            update_filter
+        ] += grad_abs
+
+        self.denom[
+            update_filter
+        ] += 1
         self.denom_abs[update_filter] += 1
 
     def get_points_depth_in_depth_map(self, fov_camera, depth, points_in_camera_space, scale=1):
