@@ -15,7 +15,6 @@ import torch
 import random
 from random import randint
 from utils.loss_utils import l1_loss, ssim, loss_depth_smoothness
-from utils.detail_routing import build_detail_densification_route
 from utils.feat_utils import compute_reference_view_feature_penalty, FeatExt
 from gaussian_renderer import render, network_gui
 import sys
@@ -145,7 +144,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     # scaffold has stabilized.
     # Ablation: no optical stage. Geometry/densification follow the normal SparseSurf schedule.
     optical_start_iter = opt.iterations + 1
-    detail_route_end_iter = 4500
     optical_model = None
     temp_trainCam = scene.getTrainCameras().copy()
     name2idx = {}
@@ -297,26 +295,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image = render_pkg["app_image"]
 
         gt_image = viewpoint_cam.original_image.cuda()
-        # Coarse-to-fine photometric supervision.
-        # Sparse geometry is established before full-resolution
-        # texture can dominate the RGB objective.
-        if iteration < 2500:
-            photo_image = F.interpolate(
-                image.unsqueeze(0),
-                scale_factor=0.5,
-                mode="bilinear",
-                align_corners=False
-            ).squeeze(0)
-
-            photo_gt = F.interpolate(
-                gt_image.unsqueeze(0),
-                scale_factor=0.5,
-                mode="bilinear",
-                align_corners=False
-            ).squeeze(0)
-        else:
-            photo_image = image
-            photo_gt = gt_image
+        # AppModel-only recovery:
+        # preserve ordinary full-resolution SparseSurf supervision.
+        photo_image = image
+        photo_gt = gt_image
 
         Ll1 = l1_loss(photo_image, photo_gt)
 
@@ -502,30 +484,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                             * ncc_valid.mean()
                         )
                         loss += ncc_loss
-
-                    # Late geometry/detail stage:
-                    # only stable spatial detail may increase
-                    # densification pressure.
-                    if (
-                        iteration >= 3000
-                        and iteration < detail_route_end_iter
-                    ):
-                        detail_densify_route = (
-                            build_detail_densification_route(
-                                gaussians=gaussians,
-                                viewpoint_cam=viewpoint_cam,
-                                gt_image=gt_image,
-                                rendered_image=image,
-                                radii=radii,
-                                visibility_filter=visibility_filter,
-                                valid_indices=valid_indices,
-                                ncc_error=ncc_raw,
-                                ncc_threshold=opt.ncc_mask_ratio,
-                                patch_size=patch_size,
-                                height=H,
-                                width=W,
-                            )
-                        )
 
         # Posudo-View Feature Regularization
         loss = apply_reference_feature_penalty(
