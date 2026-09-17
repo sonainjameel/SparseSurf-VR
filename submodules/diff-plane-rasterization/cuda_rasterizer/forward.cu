@@ -112,6 +112,126 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
+// Compute inverse screen-to-surface coordinates for spatial appearance.
+// The two non-minimum-scale Gaussian axes form the local tangent plane.
+// Local u,v = +/-1 correspond to approximately +/-3 sigma.
+__device__ bool computeLocalUVTransform(
+    const float3& mean,
+    const glm::vec3& scale,
+    float scale_modifier,
+    const glm::vec4& rot,
+    const float* viewmatrix,
+    float focal_x,
+    float focal_y,
+    float4& uv_transform)
+{
+    const float r = rot.x;
+    const float x = rot.y;
+    const float y = rot.z;
+    const float z = rot.w;
+
+    // Columns of the Python rotation matrix.
+    const float3 axis0 = {
+        1.f - 2.f * (y * y + z * z),
+        2.f * (x * y + r * z),
+        2.f * (x * z - r * y)
+    };
+
+    const float3 axis1 = {
+        2.f * (x * y - r * z),
+        1.f - 2.f * (x * x + z * z),
+        2.f * (y * z + r * x)
+    };
+
+    const float3 axis2 = {
+        2.f * (x * z + r * y),
+        2.f * (y * z - r * x),
+        1.f - 2.f * (x * x + y * y)
+    };
+
+    int normal_axis = 0;
+    if (scale.y < scale.x)
+        normal_axis = 1;
+
+    if ((normal_axis == 0 && scale.z < scale.x) ||
+        (normal_axis == 1 && scale.z < scale.y))
+        normal_axis = 2;
+
+    float3 tangent_u;
+    float3 tangent_v;
+    float scale_u;
+    float scale_v;
+
+    if (normal_axis == 0)
+    {
+        tangent_u = axis1;
+        tangent_v = axis2;
+        scale_u = scale.y;
+        scale_v = scale.z;
+    }
+    else if (normal_axis == 1)
+    {
+        tangent_u = axis0;
+        tangent_v = axis2;
+        scale_u = scale.x;
+        scale_v = scale.z;
+    }
+    else
+    {
+        tangent_u = axis0;
+        tangent_v = axis1;
+        scale_u = scale.x;
+        scale_v = scale.y;
+    }
+
+    const float support = 3.f * scale_modifier;
+
+    tangent_u.x *= support * scale_u;
+    tangent_u.y *= support * scale_u;
+    tangent_u.z *= support * scale_u;
+
+    tangent_v.x *= support * scale_v;
+    tangent_v.y *= support * scale_v;
+    tangent_v.z *= support * scale_v;
+
+    const float3 center_cam = transformPoint4x3(mean, viewmatrix);
+    const float3 u_cam = transformVec4x3(tangent_u, viewmatrix);
+    const float3 v_cam = transformVec4x3(tangent_v, viewmatrix);
+
+    if (fabsf(center_cam.z) < 1e-6f)
+        return false;
+
+    const float inv_z2 = 1.f / (center_cam.z * center_cam.z);
+
+    const float2 u_screen = {
+        focal_x * (u_cam.x * center_cam.z - center_cam.x * u_cam.z) * inv_z2,
+        focal_y * (u_cam.y * center_cam.z - center_cam.y * u_cam.z) * inv_z2
+    };
+
+    const float2 v_screen = {
+        focal_x * (v_cam.x * center_cam.z - center_cam.x * v_cam.z) * inv_z2,
+        focal_y * (v_cam.y * center_cam.z - center_cam.y * v_cam.z) * inv_z2
+    };
+
+    const float det =
+        u_screen.x * v_screen.y -
+        v_screen.x * u_screen.y;
+
+    if (fabsf(det) < 1e-6f)
+        return false;
+
+    const float inv_det = 1.f / det;
+
+    uv_transform = {
+        v_screen.y * inv_det,
+        -v_screen.x * inv_det,
+        -u_screen.y * inv_det,
+        u_screen.x * inv_det
+    };
+
+    return true;
+}
+
 // Forward method for converting scale and rotation properties of each
 // Gaussian to a 3D covariance matrix in world space. Also takes care
 // of quaternion normalization.
@@ -175,6 +295,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
+	float4* local_uv_transform,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered)
@@ -182,6 +303,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
+
+    local_uv_transform[idx] = {0.f, 0.f, 0.f, 0.f};
 
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
@@ -195,6 +318,24 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
+
+    if (cov3D_precomp == nullptr)
+    {
+        float4 uv_transform;
+        if (computeLocalUVTransform(
+            p_orig,
+            scales[idx],
+            scale_modifier,
+            rotations[idx],
+            viewmatrix,
+            focal_x,
+            focal_y,
+            uv_transform))
+        {
+            local_uv_transform[idx] = uv_transform;
+        }
+    }
+
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
@@ -362,6 +503,7 @@ renderCUDA(
 	const float* __restrict__ features,
 	const float* __restrict__ all_map,
 	const float4* __restrict__ conic_opacity,
+const float4* __restrict__ local_uv_transform,
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
@@ -497,6 +639,7 @@ void FORWARD::render(
 	const float* colors,
 	const float* all_map,
 	const float4* conic_opacity,
+const float4* local_uv_transform,
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
@@ -518,6 +661,7 @@ void FORWARD::render(
 		colors,
 		all_map,
 		conic_opacity,
+		local_uv_transform,
 		final_T,
 		n_contrib,
 		bg_color,
@@ -550,6 +694,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
+	float4* local_uv_transform,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered)
@@ -577,6 +722,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		cov3Ds,
 		rgb,
 		conic_opacity,
+		local_uv_transform,
 		grid,
 		tiles_touched,
 		prefiltered
