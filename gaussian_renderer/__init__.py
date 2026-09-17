@@ -309,7 +309,29 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Optical RGB is rendered separately so depth, normals,
     # visibility and geometric occupancy remain SparseSurf geometry.
     if optical_model is not None:
-        optical_image, _, _, _, _ = rasterizer(
+        # Optical RGB does not require SparseSurf geometry outputs.
+        # Use a separate non-geometry rasterizer; reusing the
+        # render_geo=True rasterizer causes an illegal CUDA memory access.
+        optical_raster_settings = PlaneGaussianRasterizationSettings(
+            image_height=int(viewpoint_camera.image_height),
+            image_width=int(viewpoint_camera.image_width),
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
+            bg=bg_color,
+            scale_modifier=scaling_modifier,
+            viewmatrix=viewpoint_camera.world_view_transform,
+            projmatrix=viewpoint_camera.full_proj_transform,
+            sh_degree=pc.active_sh_degree,
+            campos=viewpoint_camera.camera_center,
+            prefiltered=False,
+            render_geo=False,
+            debug=pipe.debug
+        )
+        optical_rasterizer = PlaneGaussianRasterizer(
+            raster_settings=optical_raster_settings
+        )
+
+        optical_image, _, _, _, _ = optical_rasterizer(
             means3D = means3D.detach(),
             means2D = means2D,
             means2D_abs = means2D_abs,
