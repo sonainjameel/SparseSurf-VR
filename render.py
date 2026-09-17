@@ -46,7 +46,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     # mandatory. Never silently fall back to baseline rendering.
     optical_model = None
 
-    if iteration >= 4500:
+    # Ablation branch: optical appearance is intentionally disabled.
+    enable_optical_eval = False
+
+    if enable_optical_eval and iteration >= 4500:
         optical_path = os.path.join(
             model_path,
             "optical_model",

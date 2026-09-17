@@ -143,7 +143,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     # Optical appearance is activated only after the geometry/detail
     # scaffold has stabilized.
-    optical_start_iter = 4500
+    # Ablation: no optical stage. Geometry/densification follow the normal SparseSurf schedule.
+    optical_start_iter = opt.iterations + 1
+    detail_route_end_iter = 4500
     optical_model = None
     temp_trainCam = scene.getTrainCameras().copy()
     name2idx = {}
@@ -506,7 +508,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # densification pressure.
                     if (
                         iteration >= 3000
-                        and iteration < optical_start_iter
+                        and iteration < detail_route_end_iter
                     ):
                         detail_densify_route = (
                             build_detail_densification_route(
