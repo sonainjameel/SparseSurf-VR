@@ -537,6 +537,7 @@ const float* __restrict__ spatial_patch,
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float4 collected_local_uv_transform[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -560,6 +561,7 @@ const float* __restrict__ spatial_patch,
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			collected_local_uv_transform[block.thread_rank()] = local_uv_transform[coll_id];
 		}
 		block.sync();
 
@@ -591,9 +593,60 @@ const float* __restrict__ spatial_patch,
 				continue;
 			}
 
-			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+            // Eq. (3) from 3D Gaussian splatting paper, augmented with
+            // a surface-anchored 2x2 RGB residual patch.
+            const int gaussian_id = collected_id[j];
+            const float4 uv_t = collected_local_uv_transform[j];
+
+            const bool valid_uv =
+                fabsf(uv_t.x) + fabsf(uv_t.y) +
+                fabsf(uv_t.z) + fabsf(uv_t.w) > 0.f;
+
+            float w00 = 0.f;
+            float w10 = 0.f;
+            float w01 = 0.f;
+            float w11 = 0.f;
+
+            if (valid_uv)
+            {
+                const float pixel_dx = -d.x;
+                const float pixel_dy = -d.y;
+
+                float u = uv_t.x * pixel_dx + uv_t.y * pixel_dy;
+                float v = uv_t.z * pixel_dx + uv_t.w * pixel_dy;
+
+                u = max(-1.f, min(1.f, u));
+                v = max(-1.f, min(1.f, v));
+
+                const float tx = 0.5f * (u + 1.f);
+                const float ty = 0.5f * (v + 1.f);
+
+                w00 = (1.f - tx) * (1.f - ty);
+                w10 = tx * (1.f - ty);
+                w01 = (1.f - tx) * ty;
+                w11 = tx * ty;
+            }
+
+            for (int ch = 0; ch < CHANNELS; ch++)
+            {
+                float residual = 0.f;
+
+                if (valid_uv)
+                {
+                    const int patch_base = gaussian_id * 12 + ch;
+
+                    residual =
+                        w00 * spatial_patch[patch_base] +
+                        w10 * spatial_patch[patch_base + 3] +
+                        w01 * spatial_patch[patch_base + 6] +
+                        w11 * spatial_patch[patch_base + 9];
+                }
+
+                const float color =
+                    features[gaussian_id * CHANNELS + ch] + residual;
+
+                C[ch] += color * alpha * T;
+            }
 			if (render_geo) {
 				for (int ch = 0; ch < ALL_MAP; ch++)
 					All_map[ch] += all_map[collected_id[j] * ALL_MAP + ch] * alpha * T;
