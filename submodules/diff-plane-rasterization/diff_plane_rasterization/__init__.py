@@ -124,6 +124,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 radii, 
                 colors_precomp, 
                 all_maps,
+                spatial_patch,
                 scales, 
                 rotations, 
                 raster_settings.scale_modifier, 
@@ -149,13 +150,13 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_means2D_abs, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, gard_all_map = _C.rasterize_gaussians_backward(*args)
+                grad_means2D, grad_means2D_abs, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, gard_all_map, grad_spatial_patch = _C.rasterize_gaussians_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_means2D_abs, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, gard_all_map = _C.rasterize_gaussians_backward(*args)
+             grad_means2D, grad_means2D_abs, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, gard_all_map, grad_spatial_patch = _C.rasterize_gaussians_backward(*args)
         # print(f"grad_means2D {grad_means2D.sum()}, grad_means2D_abs {grad_means2D_abs.sum()}")
 
         grads = (
@@ -169,7 +170,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_rotations,
             grad_cov3Ds_precomp,
             gard_all_map,
-            None,
+            grad_spatial_patch,
             None,
         )
 

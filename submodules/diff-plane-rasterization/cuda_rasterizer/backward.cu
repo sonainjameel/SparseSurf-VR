@@ -406,7 +406,9 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
+	const float4* __restrict__ local_uv_transform,
 	const float* __restrict__ colors,
+	const float* __restrict__ spatial_patch,
 	const float* __restrict__ all_maps,
 	const float* __restrict__ all_map_pixels,
 	const float* __restrict__ final_Ts,
@@ -419,6 +421,7 @@ renderCUDA(
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
+	float* __restrict__ dL_dspatial_patch,
 	float* __restrict__ dL_dall_map,
 	const bool render_geo)
 {
@@ -687,7 +690,9 @@ void BACKWARD::render(
 	const float* bg_color,
 	const float2* means2D,
 	const float4* conic_opacity,
+	const float4* local_uv_transform,
 	const float* colors,
+	const float* spatial_patch,
 	const float* all_maps,
 	const float* all_map_pixels,
 	const float* final_Ts,
@@ -700,6 +705,7 @@ void BACKWARD::render(
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dcolors,
+	float* dL_dspatial_patch,
 	float* dL_dall_map,
 	const bool render_geo)
 {
@@ -711,7 +717,9 @@ void BACKWARD::render(
 		bg_color,
 		means2D,
 		conic_opacity,
+		local_uv_transform,
 		colors,
+		spatial_patch,
 		all_maps,
 		all_map_pixels,
 		final_Ts,
@@ -724,6 +732,7 @@ void BACKWARD::render(
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dcolors,
+		dL_dspatial_patch,
 		dL_dall_map,
 		render_geo
 		);

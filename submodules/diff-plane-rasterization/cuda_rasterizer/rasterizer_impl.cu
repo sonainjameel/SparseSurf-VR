@@ -423,6 +423,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* shs,
 	const float* colors_precomp,
 	const float* all_maps,
+	const float* spatial_patch,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -443,6 +444,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dconic,
 	float* dL_dopacity,
 	float* dL_dcolor,
+	float* dL_dspatial_patch,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
 	float* dL_dsh,
@@ -481,7 +483,9 @@ void CudaRasterizer::Rasterizer::backward(
 		background,
 		geomState.means2D,
 		geomState.conic_opacity,
+		geomState.local_uv_transform,
 		color_ptr,
+		spatial_patch,
 		all_maps,
 		all_map_pixels,
 		imgState.accum_alpha,
@@ -494,6 +498,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(float4*)dL_dconic,
 		dL_dopacity,
 		dL_dcolor,
+		dL_dspatial_patch,
 		dL_dall_map,
 		render_geo), debug)
 

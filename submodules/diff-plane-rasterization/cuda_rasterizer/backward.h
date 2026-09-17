@@ -29,7 +29,9 @@ namespace BACKWARD
 		const float* bg_color,
 		const float2* means2D,
 		const float4* conic_opacity,
+		const float4* local_uv_transform,
 		const float* colors,
+		const float* spatial_patch,
 		const float* all_maps,
 		const float* all_map_pixels,
 		const float* final_Ts,
@@ -42,6 +44,7 @@ namespace BACKWARD
 		float4* dL_dconic2D,
 		float* dL_dopacity,
 		float* dL_dcolors,
+		float* dL_dspatial_patch,
 		float* dL_dall_map,
 		const bool render_geo);
 

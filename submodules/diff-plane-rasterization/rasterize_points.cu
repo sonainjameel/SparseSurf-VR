@@ -126,7 +126,7 @@ RasterizeGaussiansCUDA(
   return std::make_tuple(rendered, out_color, radii, out_observe, out_all_map, out_plane_depth, geomBuffer, binningBuffer, imgBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& all_map_pixels,
@@ -134,6 +134,7 @@ RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor& radii,
     const torch::Tensor& colors,
 	const torch::Tensor& all_maps,
+	const torch::Tensor& spatial_patch,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -176,6 +177,7 @@ RasterizeGaussiansBackwardCUDA(
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
+  torch::Tensor dL_dspatial_patch = torch::zeros_like(spatial_patch);
   
   if(P != 0)
   {  
@@ -187,6 +189,7 @@ RasterizeGaussiansBackwardCUDA(
 	  sh.contiguous().data<float>(),
 	  colors.contiguous().data<float>(),
 	  all_maps.contiguous().data<float>(),
+	  spatial_patch.contiguous().data<float>(),
 	  scales.data_ptr<float>(),
 	  scale_modifier,
 	  rotations.data_ptr<float>(),
@@ -208,6 +211,7 @@ RasterizeGaussiansBackwardCUDA(
 	  dL_dconic.contiguous().data<float>(),  
 	  dL_dopacity.contiguous().data<float>(),
 	  dL_dcolors.contiguous().data<float>(),
+	  dL_dspatial_patch.contiguous().data<float>(),
 	  dL_dmeans3D.contiguous().data<float>(),
 	  dL_dcov3D.contiguous().data<float>(),
 	  dL_dsh.contiguous().data<float>(),
@@ -218,7 +222,7 @@ RasterizeGaussiansBackwardCUDA(
 	  debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dmeans2D_abs, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_drotations, dL_dall_map);
+  return std::make_tuple(dL_dmeans2D, dL_dmeans2D_abs, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_drotations, dL_dall_map, dL_dspatial_patch);
 }
 
 torch::Tensor markVisible(

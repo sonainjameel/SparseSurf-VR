@@ -40,7 +40,7 @@ RasterizeGaussiansCUDA(
 	const bool render_geo,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& all_map_pixels,
@@ -48,6 +48,7 @@ RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor& radii,
     const torch::Tensor& colors,
 	const torch::Tensor& all_maps,
+	const torch::Tensor& spatial_patch,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
