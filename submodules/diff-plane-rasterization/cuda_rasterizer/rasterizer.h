@@ -44,6 +44,7 @@ namespace CudaRasterizer
 			const float* rotations,
 			const float* cov3D_precomp,
 			const float* all_map,
+			const float* spatial_patch,
 			const float* viewmatrix,
 			const float* projmatrix,
 			const float* cam_pos,

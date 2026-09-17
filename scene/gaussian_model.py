@@ -57,6 +57,7 @@ class GaussianModel:
         self._knn_f = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
+        self._spatial_patch = torch.empty(0)
         self._surf_feat = torch.empty(0)
         self.feat_dim = feat_dim
 
@@ -143,6 +144,10 @@ class GaussianModel:
         return torch.cat((features_dc, features_rest), dim=1)
     
     @property
+    def get_spatial_patch(self):
+        return self._spatial_patch
+
+    @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
@@ -197,6 +202,7 @@ class GaussianModel:
         self._knn_f = nn.Parameter(knn_f.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._spatial_patch = nn.Parameter(torch.zeros((fused_point_cloud.shape[0], 4, 3), dtype=torch.float, device="cuda").requires_grad_(True))
         self._surf_feat = nn.Parameter(surf_feats.requires_grad_(True))
 
         self._scaling = nn.Parameter(scales.requires_grad_(True))
@@ -219,6 +225,7 @@ class GaussianModel:
             {'params': [self._knn_f], 'lr': 0.01, "name": "knn_f"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._spatial_patch], 'lr': training_args.feature_lr, "name": "spatial_patch"},
             {'params': [self._surf_feat], 'lr': training_args.feature_lr, "name": "surf_feat"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
@@ -327,6 +334,7 @@ class GaussianModel:
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._spatial_patch = nn.Parameter(torch.zeros((xyz.shape[0], 4, 3), dtype=torch.float, device="cuda").requires_grad_(True))
         self._surf_feat = nn.Parameter(torch.tensor(surf_feats, dtype=torch.float, device="cuda").requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))

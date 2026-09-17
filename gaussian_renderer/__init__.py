@@ -114,6 +114,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             opacities = opacity,
             scales = scales,
             rotations = rotations,
+            spatial_patch = pc.get_spatial_patch,
             cov3D_precomp = cov3D_precomp)
         
         return_dict =  {"render": rendered_image,
@@ -152,6 +153,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales,
         rotations = rotations,
         all_map = input_all_map,
+        spatial_patch = pc.get_spatial_patch,
         cov3D_precomp = cov3D_precomp)
 
     rendered_normal = out_all_map[0:3]

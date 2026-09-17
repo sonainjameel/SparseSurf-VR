@@ -63,6 +63,7 @@ namespace FORWARD
 		const float* all_map,
 		const float4* conic_opacity,
         const float4* local_uv_transform,
+        const float* spatial_patch,
 		float* final_T,
 		uint32_t* n_contrib,
 		const float* bg_color,
