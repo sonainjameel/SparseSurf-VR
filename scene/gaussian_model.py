@@ -257,6 +257,8 @@ class GaussianModel:
             l.append('f_dc_{}'.format(i))
         for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
             l.append('f_rest_{}'.format(i))
+        for i in range(self._spatial_patch.shape[1]*self._spatial_patch.shape[2]):
+            l.append('spatial_patch_{}'.format(i))
         for i in range(self._surf_feat.shape[1]):
             l.append('f_surf_feat_{}'.format(i))
         l.append('opacity')
@@ -273,6 +275,7 @@ class GaussianModel:
         normals = np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        spatial_patch = self._spatial_patch.detach().flatten(start_dim=1).contiguous().cpu().numpy()
         surf_feat = self._surf_feat.detach().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
@@ -280,7 +283,7 @@ class GaussianModel:
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, surf_feat, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, spatial_patch, surf_feat, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -319,6 +322,34 @@ class GaussianModel:
         # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
+        spatial_patch_names = [
+            prop.name
+            for prop in plydata.elements[0].properties
+            if prop.name.startswith("spatial_patch_")
+        ]
+        spatial_patch_names = sorted(
+            spatial_patch_names,
+            key=lambda x: int(x.split('_')[-1])
+        )
+
+        if len(spatial_patch_names) == 0:
+            spatial_patch = np.zeros((xyz.shape[0], 4, 3), dtype=np.float32)
+        else:
+            assert len(spatial_patch_names) == 12
+            spatial_patch_flat = np.zeros(
+                (xyz.shape[0], 12),
+                dtype=np.float32
+            )
+            for idx, attr_name in enumerate(spatial_patch_names):
+                spatial_patch_flat[:, idx] = np.asarray(
+                    plydata.elements[0][attr_name]
+                ).astype(np.float32)
+            spatial_patch = spatial_patch_flat.reshape(
+                xyz.shape[0],
+                4,
+                3
+            )
+
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
@@ -334,7 +365,7 @@ class GaussianModel:
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._spatial_patch = nn.Parameter(torch.zeros((xyz.shape[0], 4, 3), dtype=torch.float, device="cuda").requires_grad_(True))
+        self._spatial_patch = nn.Parameter(torch.tensor(spatial_patch, dtype=torch.float, device="cuda").requires_grad_(True))
         self._surf_feat = nn.Parameter(torch.tensor(surf_feats, dtype=torch.float, device="cuda").requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
