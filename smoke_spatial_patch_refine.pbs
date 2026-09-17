@@ -1,0 +1,35 @@
+#!/bin/bash
+#PBS -N ss_spatch_refine_smoke
+#PBS -q large_gpuq
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+
+set -eo pipefail
+
+REPO="$HOME/projects/SparseSurf-VR"
+SCENE="$HOME/sparsesurf_shared/data/mipnerf360/SmallRoom_eval24"
+BASELINE="$HOME/sparsesurf_shared/outputs/smallroom21_sparsesurf_baseline_7000_fullres"
+OUTPUT="$HOME/sparsesurf_shared/outputs/smallroom21_spatial_patch_refine_smoke"
+
+source "$HOME/projects/SparseSurf/activate_sparsesurf_bw.sh"
+
+cd "$REPO"
+
+export PYTHONPATH="$REPO/submodules/diff-plane-rasterization:$PYTHONPATH"
+export CUDA_VISIBLE_DEVICES=0
+export OMP_NUM_THREADS=4
+
+rm -rf "$OUTPUT"
+
+python -u refine_spatial_patch.py \
+    -s "$SCENE" \
+    -m "$BASELINE" \
+    -r 1 \
+    --eval \
+    --n_views 21 \
+    --iteration 7000 \
+    --refine_iterations 2 \
+    --patch_lr 0.0025 \
+    --lambda_dssim 0.2 \
+    --output_path "$OUTPUT"
