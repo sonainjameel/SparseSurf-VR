@@ -446,6 +446,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float4 collected_local_uv_transform[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_all_maps[MAP_N * BLOCK_SIZE];
 
@@ -510,6 +511,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			collected_local_uv_transform[block.thread_rank()] = local_uv_transform[coll_id];
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 			if (render_geo) {
@@ -549,9 +551,48 @@ renderCUDA(
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
+			const float4 uv_t = collected_local_uv_transform[j];
+			const bool valid_uv =
+			    fabsf(uv_t.x) + fabsf(uv_t.y) +
+			    fabsf(uv_t.z) + fabsf(uv_t.w) > 0.f;
+
+			float w00 = 0.f;
+			float w10 = 0.f;
+			float w01 = 0.f;
+			float w11 = 0.f;
+
+			if (valid_uv)
+			{
+			    const float pixel_dx = -d.x;
+			    const float pixel_dy = -d.y;
+
+			    float u = uv_t.x * pixel_dx + uv_t.y * pixel_dy;
+			    float v = uv_t.z * pixel_dx + uv_t.w * pixel_dy;
+
+			    u = max(-1.f, min(1.f, u));
+			    v = max(-1.f, min(1.f, v));
+
+			    const float tx = 0.5f * (u + 1.f);
+			    const float ty = 0.5f * (v + 1.f);
+
+			    w00 = (1.f - tx) * (1.f - ty);
+			    w10 = tx * (1.f - ty);
+			    w01 = (1.f - tx) * ty;
+			    w11 = tx * ty;
+			}
 			for (int ch = 0; ch < C; ch++)
 			{
-				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				float residual = 0.f;
+				const int patch_base = global_id * 12 + ch;
+				if (valid_uv)
+				{
+				    residual =
+				        w00 * spatial_patch[patch_base] +
+				        w10 * spatial_patch[patch_base + 3] +
+				        w01 * spatial_patch[patch_base + 6] +
+				        w11 * spatial_patch[patch_base + 9];
+				}
+				const float c = collected_colors[ch * BLOCK_SIZE + j] + residual;
 				// Update last color (to be used in the next iteration)
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
@@ -562,6 +603,14 @@ renderCUDA(
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+				if (valid_uv)
+				{
+				    const float patch_grad = dchannel_dcolor * dL_dchannel;
+				    atomicAdd(&(dL_dspatial_patch[patch_base]), w00 * patch_grad);
+				    atomicAdd(&(dL_dspatial_patch[patch_base + 3]), w10 * patch_grad);
+				    atomicAdd(&(dL_dspatial_patch[patch_base + 6]), w01 * patch_grad);
+				    atomicAdd(&(dL_dspatial_patch[patch_base + 9]), w11 * patch_grad);
+				}
 			}
 			if (render_geo) {
 				for (int ch = 0; ch < MAP_N; ch++)
