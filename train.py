@@ -163,7 +163,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # update stereo depth  
         with torch.no_grad():
-            if iteration == opt.stereofrom_iterations or (iteration > opt.stereofrom_iterations and iteration % opt.stereosetup_interval == 0 and iteration < 7000) or (iteration > 7000 and iteration % 1000 == 0):
+            if iteration == opt.stereofrom_iterations or (iteration > opt.stereofrom_iterations and iteration % opt.stereosetup_interval == 0):
                 # print(f"stereo uodate : {iteration}")
                 for t_cam in scene.getTrainCameras():
                     current_idx = name2idx[t_cam.image_name]
