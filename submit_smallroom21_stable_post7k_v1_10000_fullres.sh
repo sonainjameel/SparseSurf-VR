@@ -70,7 +70,7 @@ find "$SCENE/images" -maxdepth 1 -name "*.png" | wc -l
 # Environment
 # ------------------------------------------------------------
 
-source "$REPO/activate_sparsesurf_bw.sh"
+source "$HOME/projects/SparseSurf/activate_sparsesurf_bw.sh"
 export PYTHONPATH="$REPO/submodules/diff-plane-rasterization:${PYTHONPATH:-}"
 
 cd "$REPO"
