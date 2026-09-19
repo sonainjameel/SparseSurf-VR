@@ -80,7 +80,7 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 7_000 
+        self.iterations = 7_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
@@ -99,12 +99,17 @@ class OptimizationParams(ParamGroup):
         self.lambda_normal_smooth = 0.05
         self.lambda_normal_prior = 0.05
         self.opacity_cull = 0.1
-        
+
 
         self.densification_interval = 100
-        self.opacity_reset_interval = 1000 
+        self.opacity_reset_interval = 1000
         self.densify_from_iter = 500
-        self.densify_until_iter = 15000 
+        self.densify_until_iter = 15000
+        self.appearance_refine_from_iter = 7000
+        self.dwt_ll1_weight = 1.0
+        self.dwt_lh1_weight = 1.0
+        self.dwt_hl1_weight = 1.0
+        self.dwt_hh1_weight = 0.0
         self.densify_grad_threshold = 0.0002
         self.lambda_stereo_depth_sup = 0.05
 
@@ -130,8 +135,8 @@ class OptimizationParams(ParamGroup):
         self.max_all_points = 6000_000
         self.opacity_cull_threshold = 0.005
         self.densify_abs_grad_threshold = 0.0008
-        
-        
+
+
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

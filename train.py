@@ -53,6 +53,52 @@ class CNN_decoder(nn.Module):
         x = self.conv(x)
         return x
 
+def haar_dwt_loss(
+    pred,
+    target,
+    ll_weight=1.0,
+    lh_weight=1.0,
+    hl_weight=1.0,
+    hh_weight=0.0,
+):
+    """Level-1 orthonormal Haar DWT L1 loss."""
+    h = min(pred.shape[-2], target.shape[-2])
+    w = min(pred.shape[-1], target.shape[-1])
+
+    h -= h % 2
+    w -= w % 2
+
+    pred = pred[..., :h, :w]
+    target = target[..., :h, :w]
+
+    def bands(x):
+        x00 = x[..., 0::2, 0::2]
+        x01 = x[..., 0::2, 1::2]
+        x10 = x[..., 1::2, 0::2]
+        x11 = x[..., 1::2, 1::2]
+
+        # Orthonormal 2D Haar transform.
+        ll = 0.5 * ( x00 + x01 + x10 + x11)
+        lh = 0.5 * (-x00 - x01 + x10 + x11)
+        hl = 0.5 * (-x00 + x01 - x10 + x11)
+        hh = 0.5 * ( x00 - x01 - x10 + x11)
+
+        return ll, lh, hl, hh
+
+    pred_bands = bands(pred)
+    target_bands = bands(target)
+
+    weights = (ll_weight, lh_weight, hl_weight, hh_weight)
+
+    total = pred.new_zeros(())
+
+    for weight, p, t in zip(weights, pred_bands, target_bands):
+        if weight != 0.0:
+            total = total + weight * torch.abs(p - t).mean()
+
+    return total
+
+
 def pca_func(feature, n=3):
     device = feature.device
     B, C, H, W = feature.shape
@@ -151,6 +197,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     viewpoint_stack2 = None
     unseen_viewpoint_stack = None
     ema_loss_for_log = 0.0
+    dwt_running_mean = 1.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
 
@@ -161,9 +208,38 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
+        appearance_refine = iteration >= opt.appearance_refine_from_iter
+
+        if iteration == opt.appearance_refine_from_iter:
+            print(
+                "\n[APPEARANCE REFINE] Geometry locked at iteration "
+                f"{opt.appearance_refine_from_iter}"
+            )
+
+            trainable_groups = []
+            frozen_groups = []
+
+            for group in gaussians.optimizer.param_groups:
+                if group["name"] in ("f_dc", "f_rest"):
+                    trainable_groups.append(group["name"])
+                else:
+                    frozen_groups.append(group["name"])
+                    group["lr"] = 0.0
+                    for param in group["params"]:
+                        param.requires_grad_(False)
+
+            print("[APPEARANCE REFINE] Trainable:", trainable_groups)
+            print("[APPEARANCE REFINE] Frozen:", frozen_groups)
+
+        if appearance_refine:
+            for group in gaussians.optimizer.param_groups:
+                if group["name"] not in ("f_dc", "f_rest"):
+                    group["lr"] = 0.0
+
+
         # update stereo depth  
         with torch.no_grad():
-            if iteration == opt.stereofrom_iterations or (iteration > opt.stereofrom_iterations and iteration % opt.stereosetup_interval == 0 and iteration < 7000) or (iteration > 7000 and iteration % 1000 == 0):
+            if iteration == opt.stereofrom_iterations or (iteration > opt.stereofrom_iterations and iteration % opt.stereosetup_interval == 0 and iteration < 7000) or (iteration > 7000 and iteration % 1000 == 0 and iteration < opt.appearance_refine_from_iter):
                 # print(f"stereo uodate : {iteration}")
                 for t_cam in scene.getTrainCameras():
                     current_idx = name2idx[t_cam.image_name]
@@ -239,6 +315,50 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        # Preserve the pure RGB objective before SparseSurf adds
+        # geometry / normal / stereo / feature regularization.
+        appearance_loss = loss.clone()
+
+        if appearance_refine:
+            dwt_loss = haar_dwt_loss(
+                image,
+                gt_image,
+                ll_weight=opt.dwt_ll1_weight,
+                lh_weight=opt.dwt_lh1_weight,
+                hl_weight=opt.dwt_hl1_weight,
+                hh_weight=opt.dwt_hh1_weight,
+            )
+
+            # LGDWT-style running magnitude balancing:
+            # EMA(base RGB loss / raw DWT loss), clamped for stability.
+            ratio = (
+                appearance_loss.detach()
+                / (dwt_loss.detach() + 1e-8)
+            ).item()
+
+            dwt_running_mean = (
+                0.95 * dwt_running_mean
+                + 0.05 * ratio
+            )
+
+            dwt_scale = float(
+                max(0.1, min(10.0, dwt_running_mean))
+            )
+
+            appearance_loss = (
+                appearance_loss
+                + dwt_scale * dwt_loss
+            )
+
+            if iteration % 100 == 0:
+                print(
+                    f"[APPEARANCE REFINE] iter={iteration} "
+                    f"rgb={loss.item():.6f} "
+                    f"dwt={dwt_loss.item():.6f} "
+                    f"scale={dwt_scale:.4f}"
+                )
+
        
         # regularization
         lambda_normal = opt.lambda_normal if iteration > opt.lambda_normal_from_iter else 0.0
@@ -412,7 +532,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         
         # loss
-        total_loss = loss + normal_loss
+        if appearance_refine:
+            total_loss = appearance_loss
+        else:
+            total_loss = loss + normal_loss
             
 
         total_loss.backward()
@@ -454,7 +577,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
 
             # Densification
-            if iteration < opt.densify_until_iter:
+            if iteration < opt.densify_until_iter and iteration < opt.appearance_refine_from_iter:
                 # Keep track of max radii in image-space for pruning
                 mask = (render_pkg["out_observe"] > 0) & visibility_filter
                 gaussians.max_radii2D[mask] = torch.max(gaussians.max_radii2D[mask], radii[mask])
@@ -467,7 +590,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                                                 opt.opacity_cull_threshold, scene.cameras_extent, size_threshold)
 
             # reset_opacity
-            if iteration < opt.densify_until_iter:
+            if iteration < opt.densify_until_iter and iteration < opt.appearance_refine_from_iter:
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
